@@ -161,6 +161,7 @@ dotnet publish TraeCheckin.Launcher\TraeCheckin.Launcher.csproj -c Release
 
 - 云端签到的凭证是 `TRAE_SESSION`（约 **14 天**有效）。过期后需回到本程序重新登录 Trae，再点一次「一键部署到云端」刷新 secret。
 - 首次部署需要 GitHub OAuth 授权；授权信息（access_token 与用户名）保存在本地配置中，不会写入云端仓库。
+- 不想用桌面程序、想手动配置这两个 Secret 的话，取值方法见下方 [「手动获取四个 Secret」](#手动获取四个-secret)。
 
 ---
 
@@ -202,20 +203,7 @@ POST https://<域名>/v2/billing/meter/daily-checkin             执行签到
 
 ### 怎么拿到这些值
 
-不用手动翻文件，直接用仓库自带的提取脚本（默认只显示脱敏信息，**不会完整打印令牌**）：
-
-```powershell
-# 查看脱敏概览：令牌长度、到期时间、uid、域名
-powershell -ExecutionPolicy Bypass -File tools\workbuddy-auth.ps1
-
-# 把 WORKBUDDY_TOKEN 的值复制到剪贴板，直接粘贴进 Secrets
-powershell -ExecutionPolicy Bypass -File tools\workbuddy-auth.ps1 -CopyToken
-```
-
-它读取的是 WorkBuddy 桌面端落盘的登录态文件：
-
-- Windows：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
-- macOS：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`
+`WORKBUDDY_TOKEN` 和 `WORKBUDDY_UID` 都来自 **WorkBuddy 桌面端的登录态文件**，用记事本打开就能看到。完整的取值步骤见 [「手动获取四个 Secret」](#手动获取四个-secret) 一节。
 
 > ⚠️ 该文件里的 `accessToken` **等同于登录密码**，只能放进 Secrets。不要提交到仓库、不要贴到聊天记录或文章里，也不要用「只露前几位」的方式打码——尾部字符同样是真实内容。
 
@@ -241,9 +229,93 @@ python checkin_workbuddy.py --from-local                 # 真实签到
 
 ### 注意事项
 
-- 令牌约 **60 天**失效。只要你正常使用 WorkBuddy 桌面端，登录态会自动刷新；若长期不开客户端导致过期，日志会报 `HTTP 401`，重开一次客户端后用提取脚本刷新 Secret 即可。
+- 令牌约 **60 天**失效。只要你正常使用 WorkBuddy 桌面端，登录态会自动刷新；若长期不开客户端导致过期，日志会报 `HTTP 401`，重开一次客户端、按下方步骤重新读一次值刷新 Secret 即可。
 - 全程纯 HTTP 调用，**不需要模拟点击、不要求客户端开着**，脚本仅依赖标准库。
 - 若出现「本机能跑通、Actions 里报 401」的情况，通常是 GitHub 机房 IP 被风控拦截，可改用自托管 runner，或用本机定时任务运行同一脚本。
+
+---
+
+## 手动获取四个 Secret
+
+Trae 和 WorkBuddy 两个 workflow 一共需要四个 Secret，下表是每个值的来源：
+
+| Secret | 用途 | 来源 | 有效期 |
+|---|---|---|---|
+| `TRAE_DEVICE_ID` | Trae 签到的 `x-device-id` 请求头 | Trae **桌面客户端**的 `storage.json` | 长期固定值，基本不用换 |
+| `TRAE_SESSION` | 用它换取 Trae 的 JWT | **浏览器** Cookie `X-Cloudide-Session` | 约 **14 天** |
+| `WORKBUDDY_TOKEN` | WorkBuddy 签到的 Bearer 令牌 | WorkBuddy **桌面端**登录态文件 | 约 **60 天** |
+| `WORKBUDDY_UID` | WorkBuddy 签到的 `X-User-Id` 请求头 | 同上 | 同令牌 |
+
+填写位置：你的仓库 → **Settings → Secrets and variables → Actions → New repository secret**，Name 填上表左列，Secret 粘贴对应的值。四个都加完后建议去 Actions 页手动 `Run workflow` 各跑一次验证。
+
+### ① TRAE_DEVICE_ID —— 来自 Trae 桌面客户端
+
+> 这个值**不在浏览器里**，F12 的 Network 面板翻到底也找不到——网页端根本不发这个请求头，它是桌面客户端的本地设备指纹。
+
+用记事本或 VS Code 打开（按顺序试，哪个存在用哪个）：
+
+```
+%APPDATA%\Trae CN\User\globalStorage\storage.json
+%APPDATA%\TRAE SOLO CN\User\globalStorage\storage.json
+```
+
+搜索关键字 `iCubeAuthInfo://icube-dc:`，会看到形如这样的键：
+
+```json
+"iCubeAuthInfo://icube-dc:1804717994863802": "..."
+```
+
+**冒号后面那串 16 位数字就是 `TRAE_DEVICE_ID`。**
+
+> ⚠️ 必须 **16 位纯数字**。用 GUID / UUID 会触发风控，签到接口返回 `9074`（"参与用户太多"）。留空也能跑（脚本会随机生成一个），但随机值每次运行都变、看起来像新设备，所以固定成这里读到的值最稳。
+
+### ② TRAE_SESSION —— 只能在浏览器里复制一次
+
+它是 HttpOnly Cookie，浏览器又以加密方式落盘（Edge 启用了 App-Bound 加密，Chrome 的库通常被进程占用），**没有可自动读取的办法，只能手动复制**。
+
+1. 浏览器打开 https://www.trae.cn ，确认已登录。
+2. 按 `F12` → **Application（应用）** → 左侧 **Cookies** → 选中 `https://www.trae.cn`。
+3. 找到 **`X-Cloudide-Session`**，双击它 **Value** 列 → 全选 → `Ctrl+C` 复制。
+4. 粘贴进 `TRAE_SESSION`。
+
+> ⚠️ 只复制 Value 本身，**不要带前面的 `X-Cloudide-Session=`**。
+> 有效期约 14 天，过期后 Actions 会失败并发邮件提醒，重新复制一次更新 Secret 即可。
+
+### ③ WORKBUDDY_TOKEN / WORKBUDDY_UID —— 来自 WorkBuddy 桌面端
+
+登录态文件位置：
+
+```
+Windows   %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
+macOS     ~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
+```
+
+它是一整行 JSON，用记事本打开后搜索 `accessToken`：
+
+| 文件里的字段 | 对应 Secret |
+|---|---|
+| `auth` → `accessToken` | `WORKBUDDY_TOKEN` |
+| `account` → `uid` | `WORKBUDDY_UID` |
+| `auth` → `expiresAt` | 到期时间（Unix 毫秒时间戳，仅供核对） |
+
+不想在长 JSON 里找，也可以在 PowerShell 里跑这几行（只打印你要的值，不写任何文件）：
+
+```powershell
+$p = "$env:LOCALAPPDATA\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info"
+$j = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+$j.auth.accessToken      # → WORKBUDDY_TOKEN
+$j.account.uid           # → WORKBUDDY_UID
+[DateTimeOffset]::FromUnixTimeMilliseconds([long]$j.auth.expiresAt).ToLocalTime()  # 到期时间
+```
+
+> ⚠️ `accessToken` 等同于登录密码，只能放进 Secrets，不要提交到仓库或贴给别人。
+> 只要你正常使用 WorkBuddy 桌面端，登录态会自动刷新；只有超过 60 天完全不开客户端才会过期，届时重开一次客户端、重新读一次即可。
+
+### 一个提速小技巧
+
+签到接口是「每天一次」语义（重复签到返回 `code=10001`，脚本判为正常，不会让 job 失败）。所以想立刻确认 Secret 配得对不对，不必等到第二天早上：
+
+先在浏览器 / 客户端里手动签到一次，然后到 **Actions → Run workflow** 手动跑一次。日志里出现 **`今天已签到，请明天再来（正常）`**，就说明 Cookie / 令牌和整条链路都是通的。这个反馈是即时的，比等定时任务快得多。
 
 ---
 

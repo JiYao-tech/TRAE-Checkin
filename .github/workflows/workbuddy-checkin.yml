@@ -1,0 +1,34 @@
+name: WorkBuddy Daily Checkin
+
+on:
+  schedule:
+    # 北京时间每天 08:00（UTC 00:00）
+    - cron: "0 0 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run WorkBuddy checkin
+        env:
+          WORKBUDDY_TOKEN: ${{ secrets.WORKBUDDY_TOKEN }}
+          WORKBUDDY_UID: ${{ secrets.WORKBUDDY_UID }}
+          WORKBUDDY_DOMAIN: ${{ secrets.WORKBUDDY_DOMAIN }}
+          WORKBUDDY_TOKEN_2: ${{ secrets.WORKBUDDY_TOKEN_2 }}
+          WORKBUDDY_UID_2: ${{ secrets.WORKBUDDY_UID_2 }}
+          WORKBUDDY_TOKEN_3: ${{ secrets.WORKBUDDY_TOKEN_3 }}
+          WORKBUDDY_UID_3: ${{ secrets.WORKBUDDY_UID_3 }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: python checkin_workbuddy.py

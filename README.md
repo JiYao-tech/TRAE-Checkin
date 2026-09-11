@@ -164,6 +164,89 @@ dotnet publish TraeCheckin.Launcher\TraeCheckin.Launcher.csproj -c Release
 
 ---
 
+## WorkBuddy 自动签到（GitHub Actions）
+
+Trae 之外，本仓库还附带一个独立的 WorkBuddy 每日签到脚本 [checkin_workbuddy.py](checkin_workbuddy.py)，同样跑在 GitHub Actions 上，与 Trae 的 workflow **相互独立、互不影响**（一个失败不会拖累另一个）。
+
+机制差别：Trae 靠 `X-Cloudide-Session` Cookie 换取 JWT；WorkBuddy 直接使用桌面端落盘的**长效 accessToken**（约 60 天），所以维护频率更低。
+
+### 它是怎么工作的
+
+```
+POST https://<域名>/v2/billing/meter/checkin-activity-status   查询今日签到状态
+POST https://<域名>/v2/billing/meter/daily-checkin             执行签到
+     Header: Authorization: Bearer <accessToken>
+             X-User-Id: <uid>
+     Body:   {}
+```
+
+响应语义：
+
+| 返回 | 含义 | 脚本判定 |
+|---|---|---|
+| `code = 0` | 签到成功 | ✅ 成功 |
+| `code = 10001` | 今天已签到（幂等） | ✅ 正常，不会让 job 失败 |
+| `HTTP 401` | 登录态过期 | ❌ 需刷新令牌 |
+
+域名默认 `copilot.tencent.com`，可用 `WORKBUDDY_DOMAIN` 覆盖。
+
+### 需要配置的 Secrets
+
+| Secret 名称 | 必填 | 说明 |
+|---|---|---|
+| `WORKBUDDY_TOKEN` | ✅ | 桌面端登录态里的 `auth.accessToken`（约 60 天有效） |
+| `WORKBUDDY_UID` | ⬜ | 桌面端登录态里的 `account.uid`，作为 `X-User-Id` 发送 |
+| `WORKBUDDY_DOMAIN` | ⬜ | 接口域名，缺省 `copilot.tencent.com` |
+| `WORKBUDDY_TOKEN_2` / `WORKBUDDY_UID_2` | ⬜ | 第 2 个账号，依次类推 |
+| `FEISHU_WEBHOOK` | ⬜ | 与 Trae 共用；签到后推一条汇总 |
+
+### 怎么拿到这些值
+
+不用手动翻文件，直接用仓库自带的提取脚本（默认只显示脱敏信息，**不会完整打印令牌**）：
+
+```powershell
+# 查看脱敏概览：令牌长度、到期时间、uid、域名
+powershell -ExecutionPolicy Bypass -File tools\workbuddy-auth.ps1
+
+# 把 WORKBUDDY_TOKEN 的值复制到剪贴板，直接粘贴进 Secrets
+powershell -ExecutionPolicy Bypass -File tools\workbuddy-auth.ps1 -CopyToken
+```
+
+它读取的是 WorkBuddy 桌面端落盘的登录态文件：
+
+- Windows：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
+- macOS：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`
+
+> ⚠️ 该文件里的 `accessToken` **等同于登录密码**，只能放进 Secrets。不要提交到仓库、不要贴到聊天记录或文章里，也不要用「只露前几位」的方式打码——尾部字符同样是真实内容。
+
+### 本地先试跑一次
+
+不配任何环境变量，直接复用本机登录态：
+
+```bash
+python checkin_workbuddy.py --from-local --status-only   # 只查状态，不签到
+python checkin_workbuddy.py --from-local                 # 真实签到
+```
+
+### 在 GitHub 上启用
+
+1. 把本仓库 fork / push 到自己的 GitHub 仓库，保留默认分支。
+2. 进入 **Actions** 标签页，启用 workflows。
+3. 左侧选中 **WorkBuddy Daily Checkin**，若显示 **Enable workflow** 就点一下（公开仓库 fork 后 scheduled workflow 默认被禁用）。
+4. Settings → Secrets and variables → Actions，添加 `WORKBUDDY_TOKEN`（需要的话再加 `WORKBUDDY_UID`）。
+5. Actions → **Run workflow** 手动跑一次，日志出现 `本次积分=100` 或 `今天已签到，请明天再来（正常）` 即为成功。
+6. 之后每天 **北京时间 08:00**（cron `0 0 * * *`）自动执行。
+
+`workflow_dispatch` 已配置，随时可手动触发验证，无需等定时。
+
+### 注意事项
+
+- 令牌约 **60 天**失效。只要你正常使用 WorkBuddy 桌面端，登录态会自动刷新；若长期不开客户端导致过期，日志会报 `HTTP 401`，重开一次客户端后用提取脚本刷新 Secret 即可。
+- 全程纯 HTTP 调用，**不需要模拟点击、不要求客户端开着**，脚本仅依赖标准库。
+- 若出现「本机能跑通、Actions 里报 401」的情况，通常是 GitHub 机房 IP 被风控拦截，可改用自托管 runner，或用本机定时任务运行同一脚本。
+
+---
+
 ## 签到结果推送（飞书）
 
 可在「设置」页粘贴飞书自定义机器人的 webhook 地址，签到成功/失败后主动推送到飞书群：

@@ -6,3 +6,5 @@ obj/
 **/config.json
 **/history.txt
 **/WebView/
+__pycache__/
+*.pyc

@@ -64,20 +64,52 @@ def get_token(session: str) -> str:
     return token
 
 
-def checkin(token: str, device_id: str) -> dict:
-    """执行每日签到（claim）。"""
-    headers = {
+def _auth_headers(token: str, device_id: str) -> dict:
+    """签到 / 查状态共用的认证请求头。"""
+    return {
         "Authorization": "Cloud-IDE-JWT " + token,
         "X-User-Region": "cn",
         "x-device-id": device_id,
         "Content-Type": "application/json",
         "User-Agent": "TraeCheckin/1.0",
     }
-    status, text = _post("/trae/api/v2/ug/checkin_credits/claim", headers, "{}")
+
+
+def checkin(token: str, device_id: str) -> dict:
+    """执行每日签到（claim）。"""
+    status, text = _post("/trae/api/v2/ug/checkin_credits/claim", _auth_headers(token, device_id), "{}")
     try:
         return {"http": status, "body": json.loads(text)}
     except json.JSONDecodeError:
         return {"http": status, "body": {"raw": text}}
+
+
+def get_status(token: str, device_id: str) -> dict:
+    """查询签到状态与单日奖励。
+
+    注意：claim 接口的响应只含 code/message/checked_in，**不含积分字段**；
+    实际获得的积分必须再查一次 status 接口（与官方桌面程序的做法一致）：
+    credits 为基础签到所得，extra_credits 为连签加成（仅会员实际到账）。
+    """
+    status, text = _post("/trae/api/v2/ug/checkin_credits/status", _auth_headers(token, device_id), "{}")
+    try:
+        return {"http": status, "body": json.loads(text)}
+    except json.JSONDecodeError:
+        return {"http": status, "body": {"raw": text}}
+
+
+def describe_reward(token: str, device_id: str):
+    """签到后查 status 接口，返回今日奖励的描述文字；查询失败返回 None。"""
+    result = get_status(token, device_id)
+    body = result["body"]
+    if result["http"] != 200 or body.get("code") != 0 or not body.get("checked_in", False):
+        return None
+    base = body.get("credits", 0) or 0
+    extra = body.get("extra_credits", 0) or 0
+    text = "今日奖励：%s 积分" % base
+    if extra:
+        text += "（另含连签加成 %s 积分，连签奖励仅会员实际到账）" % extra
+    return text
 
 
 def notify_feishu(webhook, text):
@@ -140,9 +172,13 @@ def main():
             code = body.get("code", -1)
             checked = body.get("checked_in", False)
             ok = (result["http"] == 200) and (code == 0 or checked)
-            credits = body.get("credits", 0)
             if ok:
-                print("[%s] 签到成功，本次获得：%s 积分" % (name, credits))
+                # claim 响应不含积分字段，需再查一次 status 接口读取今日奖励
+                detail = describe_reward(token, device_id)
+                if detail:
+                    print("[%s] 签到成功，%s" % (name, detail))
+                else:
+                    print("[%s] 签到成功（今日奖励明细读取失败，可到 Trae 官网核对实际到账积分）" % name)
                 ok_names.append(name)
             else:
                 reason = body.get("message") or ("HTTP %s" % result["http"])
